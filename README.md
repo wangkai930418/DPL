@@ -11,6 +11,11 @@ The required packages are listed in *"dpl.yml"*
 
 - bash  ./DPL.sh
 
+## Supplementary Material
+
+[Supplementary Material](supplementary.pdf) is over here.
+
+
 ### TODO
 
 This repository is a draft code release for our paper. The augmented version will be soon released along with extended supplementary materials.
