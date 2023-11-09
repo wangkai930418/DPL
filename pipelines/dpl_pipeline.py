@@ -553,6 +553,53 @@ class StableDiffusion_MyPipeline(DiffusionPipeline):
         cos_dist = cos_sim[cos_mask].mean()
         return cos_dist
     
+    # @staticmethod    
+    # def _compute_cosine_adj(attention_maps: torch.Tensor,indices_to_alter: List[int], adj_indices_to_alter: List[int],):
+    #     x_attn = attention_maps[:,:,indices_to_alter].view(-1,len(indices_to_alter)).t()
+    #     x_attn_adj = attention_maps[:,:,adj_indices_to_alter].view(-1,len(adj_indices_to_alter)).t()
+
+    #     return 1.0 - (F.cosine_similarity(x_attn, x_attn_adj)).mean()
+    
+    # @staticmethod    
+    # def _compute_cosine_seg(attention_maps: torch.Tensor,indices_to_alter: List[int], seg_maps=None):
+    #     x_attn = attention_maps[:,:,indices_to_alter].view(-1,len(indices_to_alter)).t()
+    #     seg_maps_ = torch.cat(seg_maps).view(len(seg_maps),-1)
+    #     return 1.0 - (F.cosine_similarity(x_attn, seg_maps_)).mean()
+    
+    # @staticmethod    
+    # def _compute_IoU_loss(attention_maps: torch.Tensor,indices_to_alter: List[int], seg_maps=None):
+    #     x_attn = attention_maps[:,:,indices_to_alter].view(-1,len(indices_to_alter)).t()
+    #     seg_maps_ = torch.cat(seg_maps).view(len(seg_maps),-1)
+
+    #     length=len(seg_maps_)
+    #     loss_list=[(x_attn[i]*seg_maps_[i]).sum()/x_attn[i].sum() for i in range(length)]
+
+    #     return 1 - sum(loss_list)/float(length)
+    #     # return 1.0 - (x_attn*seg_maps_).sum()/x_attn.sum()
+    
+    # @staticmethod    
+    # def _compute_corner_loss(attention_maps: torch.Tensor,indices_to_alter: List[int], seg_maps=None, res=16):
+    #     x_attn = attention_maps[:,:,indices_to_alter].view(res,res,len(indices_to_alter)).permute(2,0,1)
+    #     seg_maps_ = torch.cat(seg_maps).view(len(seg_maps),res,res)
+    #     kl_criterion = torch.nn.KLDivLoss()
+
+    #     eps=1e-5
+    #     x_attn, seg_maps_ = x_attn + eps, seg_maps_+eps
+    #     x_attn_x, x_attn_y = x_attn.sum(1)/x_attn.sum(),x_attn.sum(2)/x_attn.sum()
+    #     seg_maps_x, seg_maps_y = seg_maps_.sum(1)/seg_maps_.sum(),seg_maps_.sum(2)/seg_maps_.sum()
+        
+    #     kl_loss = 0.5 * kl_criterion(x_attn_x.log(), seg_maps_x) + kl_criterion(x_attn_y.log(), seg_maps_y)
+
+    #     return kl_loss
+    
+    # @staticmethod    
+    # def _compute_cosine(attention_maps: torch.Tensor,indices_to_alter: List[int],):
+    #     x_attn = attention_maps[:,:,indices_to_alter].view(-1,len(indices_to_alter)).t()
+    #     cos_mask = torch.tril(torch.ones((len(indices_to_alter),len(indices_to_alter))),diagonal=-1).bool()
+    #     ### NOTE: broadcasting
+    #     cos_sim = F.cosine_similarity(x_attn[:,:,None], x_attn.t()[None,:,:])
+    #     cos_dist = cos_sim[cos_mask].mean()
+    #     return cos_dist
     
     def _aggregate_and_get_max_attention_per_token(
         self,
