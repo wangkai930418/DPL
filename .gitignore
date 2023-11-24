@@ -1,0 +1,33 @@
+# .vscode
+# blip_embed
+# images
+# outputs
+# *__pycache__*
+# *.sh
+# *.png
+# output
+# gen_imgs
+# test.py
+# clip_retrieval
+# *knn_search_dataset*
+
+# attn_avg
+# attn_avg_blackwhite
+# filter_clip_retrieval
+# save_results
+
+# seg_dirs
+# gsam_mask
+# out_seg_guide
+# lpm_vs_gsam
+# lpm_mask
+
+# imagic
+# coco_search
+# unsplash_search
+
+# post_submit
+
+# prompt_learning
+
+# sh2txt.py
