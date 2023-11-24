@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import copy
 import numpy as np
 import PIL
+import math
 import torch 
 import torch.nn.functional as F
 from transformers import (
@@ -14,6 +15,7 @@ from transformers import (
     CLIPTextModel,
     CLIPTokenizer,
 )
+from diffusers.models.attention_processor import Attention
 
 from diffusers.models import AutoencoderKL, UNet2DConditionModel
 from diffusers.models.cross_attention import CrossAttention
@@ -32,7 +34,6 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 
-
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -40,8 +41,10 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 def entropy(p):
         return -(p * p.log()).sum() 
 
-### ========================= initially Copied from attend and excite pipeline =========================
+### ========================= Copy from attend and excite pipeline =========================
 ### https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion_attend_and_excite.py
+
+### NOTE: below is actually the replace pipeline
 
 class AttentionStore:
     @staticmethod
@@ -50,7 +53,8 @@ class AttentionStore:
 
     ### NOTE: huggingface guys modify this code to only save the attention maps with 16*16
     def __call__(self, attn, is_cross: bool, place_in_unet: str, 
-                        cross_replace_steps, self_replace_steps):
+                        cross_replace_steps, self_replace_steps, self_start_steps=-1,
+                        seg_maps=None, seg_map_id=None, SA_blend=False):
         
         if self.cur_att_layer >= 0 and is_cross:
             if attn.shape[1] == self.attn_res**2:
@@ -142,7 +146,8 @@ class AttentionStore:
 
 class AttentionReplace(AttentionStore):
     def __call__(self, attn, is_cross: bool, place_in_unet: str, 
-                        cross_replace_steps, self_replace_steps):
+                        cross_replace_steps, self_replace_steps, self_start_steps=-1,
+                        seg_maps=None, seg_map_id=None, SA_blend=False):
         
         if self.cur_att_layer >= 0 and is_cross:
             if attn.shape[1] == self.attn_res**2:
@@ -162,6 +167,9 @@ class AttentionReplace(AttentionStore):
             ### NOTE: amplify
             # breakpoint()
             attn_replace=attn_[2].clone()
+            ### NOTE: hard coding
+            # attn_replace[:,:,2] = attn_replace[:,:,3]
+
             if self.indices_to_amplify is not None:
                 for reweight_id in range(len(self.indices_to_amplify)):
                     attn_replace[:,:, self.indices_to_amplify[reweight_id]] *= self.amplify_scale[reweight_id]
@@ -171,13 +179,38 @@ class AttentionReplace(AttentionStore):
             return attn_.reshape(C,H,W)
         
         ### NOTE: self-attention modification
-        elif (not is_cross) and self.curr_step_index < self_replace_steps:
+        elif (not is_cross) and self.curr_step_index < self_replace_steps and self.curr_step_index > self_start_steps:
             C, H, W = attn.shape
             ### NOTE: seems 8*8 attention maps are not influencing
-            if H <= 256:
-            # if H == 256:
+            # breakpoint()
+            if H <= 4096:
+            # if H == 256: ### NOTE: should be <=256
+                ### NOTE: 4 is the number of prompts. both conditional and unconditional
                 attn_ = attn.reshape(4, C//4, H, W)
-                attn_[3] = attn_[2]
+
+                ### NOTE: option 1: no blending the self attention size SA_blend applied only here
+                if not SA_blend:
+                    attn_[3] = attn_[2]
+
+                ### NOTE: option 2: blending the self attention size 
+                else:
+                    if H >= 256:
+                        attn_old = attn_[2]
+                        attn_new = attn_[3]
+                        attn_res= int(math.sqrt(H))
+
+                        ### NOTE: seg_maps are not hard coding now
+                        seg_maps_mask_ = F.interpolate(seg_maps[seg_map_id].unsqueeze(0), size = ((attn_res,attn_res))).squeeze(0)
+
+                        attn_old = attn_old.reshape(C//4, attn_res, attn_res, W)
+                        attn_new = attn_new.reshape(C//4, attn_res, attn_res, W)
+                        attn_3_ = attn_new*seg_maps_mask_.unsqueeze(-1) + attn_old*(1-seg_maps_mask_).unsqueeze(-1)
+                        attn_[3] = attn_3_.reshape(C//4, H, W)
+
+                    else:
+                        attn_[3] = attn_[2]
+                ### NOTE: blending the self attention size 
+
                 return attn_.reshape(C,H,W)
             else:
                 return attn
@@ -199,7 +232,8 @@ class AttentionReplace(AttentionStore):
 
 class AttentionRefine(AttentionStore):
     def __call__(self, attn, is_cross: bool, place_in_unet: str, 
-                        cross_replace_steps, self_replace_steps):
+                        cross_replace_steps, self_replace_steps, self_start_steps=-1,
+                        seg_maps=None, seg_map_id=None, SA_blend=False):
         
         if self.cur_att_layer >= 0 and is_cross:
             if attn.shape[1] == self.attn_res**2:
@@ -251,29 +285,59 @@ class AttentionRefine(AttentionStore):
         self.amplify_scale = amplify_scale
 
 
-
-class AttendExciteCrossAttnProcessor:
-    def __init__(self, attnstore, place_in_unet, cross_replace_steps=40, self_replace_steps=20):
+class AttnProcessor_Mine:
+    r"""
+    Default processor for performing attention-related computations.
+    """
+    def __init__(self, attnstore, place_in_unet, 
+                 cross_replace_steps=40, self_replace_steps=20, self_start_steps=-1,
+                 seg_maps=None, seg_map_id=None, SA_blend=False):
         super().__init__()
         self.attnstore = attnstore
         self.place_in_unet = place_in_unet
         self.cross_replace_steps=cross_replace_steps
         self.self_replace_steps=self_replace_steps
+        self.self_start_steps=self_start_steps
+        self.seg_maps=seg_maps
+        self.seg_map_id=seg_map_id
+        self.SA_blend=SA_blend
 
     def __call__(
-        self, 
-        attn: CrossAttention, 
-        hidden_states, 
-        encoder_hidden_states=None, 
-        attention_mask=None
+        self,
+        attn: Attention,
+        hidden_states,
+        encoder_hidden_states=None,
+        attention_mask=None,
+        temb=None,
     ):
-        batch_size, sequence_length, _ = hidden_states.shape
+        residual = hidden_states
+
+        if attn.spatial_norm is not None:
+            hidden_states = attn.spatial_norm(hidden_states, temb)
+
+        input_ndim = hidden_states.ndim
+
+        ### NOTE: should be here
+        is_cross = encoder_hidden_states is not None
+
+        if input_ndim == 4:
+            batch_size, channel, height, width = hidden_states.shape
+            hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
+
+        batch_size, sequence_length, _ = (
+            hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
+        )
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+
+        if attn.group_norm is not None:
+            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
         query = attn.to_q(hidden_states)
 
-        is_cross = encoder_hidden_states is not None
-        encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        elif attn.norm_cross:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
@@ -282,14 +346,13 @@ class AttendExciteCrossAttnProcessor:
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
 
+        ### TODO: we can do something here to achieve the MasaCtrl. The attention store should contain the QKV features
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
-
-        # NOTE: only need to store attention maps during the Attend and Excite process
-        ### but may need modification for replacing the attentions
-        # if attention_probs.requires_grad:
-            # self.attnstore(attention_probs, is_cross, self.place_in_unet)
+        
+        ### NOTE: save the attention probs
         attention_probs = self.attnstore(attention_probs, is_cross, self.place_in_unet, 
-                                         self.cross_replace_steps, self.self_replace_steps)
+                                         self.cross_replace_steps, self.self_replace_steps, self.self_start_steps,
+                                         self.seg_maps, self.seg_map_id, self.SA_blend)
         
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)
@@ -299,8 +362,19 @@ class AttendExciteCrossAttnProcessor:
         # dropout
         hidden_states = attn.to_out[1](hidden_states)
 
+        if input_ndim == 4:
+            hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
+
+        if attn.residual_connection:
+            hidden_states = hidden_states + residual
+
+        hidden_states = hidden_states / attn.rescale_output_factor
+
         return hidden_states
     
+
+
+
 
 class StableDiffusion_EditPipeline(DiffusionPipeline):
     _optional_components = [
@@ -572,10 +646,15 @@ class StableDiffusion_EditPipeline(DiffusionPipeline):
                 continue
 
             cross_att_count += 1
-            attn_procs[name] = AttendExciteCrossAttnProcessor(
+            # attn_procs[name] = AttendExciteCrossAttnProcessor(
+            attn_procs[name] = AttnProcessor_Mine(
                 attnstore=self.attention_store, place_in_unet=place_in_unet,
                 cross_replace_steps=self.cross_replace_steps, 
                 self_replace_steps=self.self_replace_steps,
+                self_start_steps=self.self_start_steps,
+                seg_maps=self.seg_maps,
+                seg_map_id=self.seg_map_id,
+                SA_blend=self.SA_blend,
             )
 
         self.unet.set_attn_processor(attn_procs)
@@ -620,17 +699,26 @@ class StableDiffusion_EditPipeline(DiffusionPipeline):
         refine=False,
         replace=False,
         local=False,
+        CA_mask=False,
         mapper = None, 
         alphas = None,
         cross_replace_steps=40,
         self_replace_steps=20,
+        self_start_steps=-1,
         indices_to_amplify=None,
         amplify_scale=1.0,
         indices_local=[2,5],
+        seg_maps=None,
+        seg_map_id=None,
+        SA_blend=False,
     ):
         ### NOTE: hard coding for these definitions
         self.cross_replace_steps = cross_replace_steps
         self.self_replace_steps = self_replace_steps
+        self.self_start_steps = self_start_steps
+        self.seg_maps = seg_maps
+        self.seg_map_id = seg_map_id
+        self.SA_blend = SA_blend
         
         # indices_to_alter = token_indices
         # 0. Define the spatial resolutions.
@@ -764,18 +852,26 @@ class StableDiffusion_EditPipeline(DiffusionPipeline):
                                     ).sample
                 
                 if local:
-                    attention_maps = self._get_attention_maps(indices=indices_local)
+                    ### NOTE: from the given segmentations
+                    mask = seg_maps[seg_map_id].bool().unsqueeze(0).tile(2,1,1,1)
+                    # mask = (1-seg_maps[1]).bool().unsqueeze(0).tile(2,1,1,1)
                     
-                    ### NOTE: get mask for local edit
-                    mask = []
-                    # for index in range(len(attention_maps)):
-                    temp=F.max_pool2d(attention_maps,(3,3), (1,1), (1,1))
-                    temp=F.interpolate(temp, size=(64,64))
-                    temp = temp / temp.max(2, keepdims=True)[0].max(3, keepdims=True)[0]
-                    temp = temp.gt(0.3)
-                    ### NOTE: threshold 0.3 hard code
-                    # breakpoint()
-                    mask = temp[:1] + temp
+                    # if CA_mask:
+                    #     print()
+                    ### NOTE: previous given by cross-attention and threshold
+                    # attention_maps = self._get_attention_maps(indices=indices_local)
+                    
+                    # ### NOTE: get mask for local edit
+                    # mask = []
+                    # # for index in range(len(attention_maps)):
+                    # temp=F.max_pool2d(attention_maps,(3,3), (1,1), (1,1))
+                    # temp=F.interpolate(temp, size=(64,64))
+                    # temp = temp / temp.max(2, keepdims=True)[0].max(3, keepdims=True)[0]
+                    # temp = temp.gt(0.3)
+                    # ### NOTE: threshold 0.3 hard code
+                    # # breakpoint()
+                    # ### NOTE: temp[0]=temp[0]+temp[0]; temp[1]=temp[0]+temp[1]
+                    # mask = temp[:1] + temp
                 else:
                     mask=None
 
@@ -788,6 +884,7 @@ class StableDiffusion_EditPipeline(DiffusionPipeline):
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
                 if local:
                     x_t = latents
+                    ### NOTE: x_t[0]=x_t[0]+mask*(x_t[0]-x_t[0]); x_t[1]=x_t[0]+mask*(x_t[1]-x_t[0])
                     x_t = x_t[:1] + mask * (x_t - x_t[:1])
                     latents = x_t
                 # call the callback, if provided

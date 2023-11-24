@@ -3,7 +3,7 @@ IMG_FORMAT='jpg'
 IMG_FOLDER='images/'
 FILE_NAME='catdog'
 
-CUDA_VISIBLE_DEVICES=1 python BG_estimate.py \
+CUDA_VISIBLE_DEVICES=1 python _2_DDIM_inv.py \
     --input_image ${IMG_FOLDER}/${FILE_NAME}.${IMG_FORMAT} \
     --results_folder output/ \
 
@@ -33,7 +33,7 @@ be_ATTN=0.3
 be_BG=0.7
 be_COSINE=0.9
 
-CUDA_VISIBLE_DEVICES=0 python DPL.py \
+CUDA_VISIBLE_DEVICES=0 python _3_dpl_inv.py \
     --input_image ${IMG_FOLDER}/${FILE_NAME}.${IMG_FORMAT} \
     --results_folder output/${FILE_NAME}/ \
     --negative_guidance_scale 7.5 \

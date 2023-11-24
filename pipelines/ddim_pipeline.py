@@ -1,3 +1,5 @@
+# https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion_pix2pix_zero.py#L285
+
 import inspect
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -33,7 +35,7 @@ from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 
 
-logger = logging.get_logger(__name__)  
+logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
 @dataclass
@@ -41,7 +43,7 @@ class Pix2PixInversionPipelineOutput(BaseOutput):
     latents: List[torch.FloatTensor]
     images: Union[List[PIL.Image.Image], np.ndarray]
 
-
+### NOTE: most from diffusers/models/cross_attention.py
 class AttendExciteCrossAttnProcessor:
     def __init__(self, attnstore, place_in_unet):
         super().__init__()
@@ -72,15 +74,19 @@ class AttendExciteCrossAttnProcessor:
 
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
 
+        ### NOTE: we can also modify this part for saving QKV features
+        # if attention_probs.requires_grad:
+        #     self.attnstore(attention_probs, is_cross, self.place_in_unet)
+            # self.attnstore(value, is_cross, self.place_in_unet)
         self.attnstore(attention_probs, is_cross, self.place_in_unet,
                        hidden_states, query, key, value)
 
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)
 
-        
+        # linear proj
         hidden_states = attn.to_out[0](hidden_states)
-        
+        # dropout
         hidden_states = attn.to_out[1](hidden_states)
 
         return hidden_states
@@ -88,6 +94,7 @@ class AttendExciteCrossAttnProcessor:
 class AttentionStore:
     @staticmethod
     def get_empty_store():
+        # return {"down": [], "mid": [], "up": []}
         return {
                 "down_cross_attn": [], "mid_cross_attn": [], "up_cross_attn": [],
                 "down_self_attn": [], "mid_self_attn": [], "up_self_attn": [],
@@ -101,7 +108,7 @@ class AttentionStore:
                 "down_self_value": [], "mid_self_value": [], "up_self_value": [],
                 }
 
-    
+    ### NOTE: huggingface guys modify this code to only save the attention maps with 256
     def __call__(self, attn, is_cross: bool, place_in_unet: str, hidden_states, query, key, value):
 
         dict_key = f"{place_in_unet}_{'cross' if is_cross else 'self'}_attn"
@@ -128,7 +135,12 @@ class AttentionStore:
     def between_steps(self):
         if len(self.attention_store) == 0:
             self.attention_store = self.step_store
-        else:    
+        else:
+            # if self.curr_step_index==50:
+            #     for key in self.attention_store:
+            #         for i in range(len(self.attention_store[key])):
+            #             self.attention_store = self.step_store
+                        
             for key in self.attention_store:
                 for i in range(len(self.attention_store[key])):
                     self.attention_store[key][i] += self.step_store[key][i]
@@ -138,7 +150,7 @@ class AttentionStore:
     
     def get_average_attention(self, device='cuda'):
         self.cur_step=50.0
-        
+        # self.cur_step=1.0
         average_attention = {key: [item.to(device) / self.cur_step for item in self.attention_store[key]] for key in
                              self.attention_store}
         return average_attention
@@ -150,7 +162,7 @@ class AttentionStore:
         attention_maps = self.get_average_attention()
         for location in from_where:
             for item in attention_maps[f"{location}_{'cross' if is_cross else 'self'}_{element_name}"]:
-            
+            # for item in attention_maps[location]:
                 if item.shape[1] == num_pixels:
                     cross_maps = item.reshape(-1, res, res, item.shape[-1])
                     out.append(cross_maps)
@@ -171,8 +183,9 @@ class AttentionStore:
         self.step_store = self.get_empty_store()
         self.attention_store = {}
         self.curr_step_index = 0
+        # self.attn_res = attn_res
 
-
+# Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.preprocess
 def preprocess(image):
     if isinstance(image, torch.Tensor):
         return image
@@ -181,8 +194,10 @@ def preprocess(image):
 
     if isinstance(image[0], PIL.Image.Image):
         w, h = image[0].size
-        w, h = map(lambda x: x - x % 8, (w, h))  
+        w, h = map(lambda x: x - x % 8, (w, h))  # resize to integer multiple of 8
 
+        ### NOTE: the lanczos interpolation is here instead of 
+        ### https://github.com/pix2pixzero/pix2pix-zero/blob/2f0b3d942b2a824ec06b328a9be39f784c746b54/src/inversion.py#L54
         image = [np.array(i.resize((w, h), resample=PIL_INTERPOLATION["lanczos"]))[None, :] for i in image]
         image = np.concatenate(image, axis=0)
         image = np.array(image).astype(np.float32) / 255.0
@@ -196,15 +211,18 @@ def preprocess(image):
 
 def prepare_unet(unet: UNet2DConditionModel):
     """Modifies the UNet (`unet`) to perform Pix2Pix Zero optimizations."""
-    
+    # pix2pix_zero_attn_procs = {}
     for name in unet.attn_processors.keys():
         module_name = name.replace(".processor", "")
         module = unet.get_submodule(module_name)
         if "attn2" in name:
+            # pix2pix_zero_attn_procs[name] = Pix2PixZeroCrossAttnProcessor(is_pix2pix_zero=True)
             module.requires_grad_(True)
         else:
+            # pix2pix_zero_attn_procs[name] = Pix2PixZeroCrossAttnProcessor(is_pix2pix_zero=False)
             module.requires_grad_(False)
 
+    # unet.set_attn_processor(pix2pix_zero_attn_procs)
     return unet
 
 
@@ -265,7 +283,7 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.register_to_config(requires_safety_checker=requires_safety_checker)
 
-    
+    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.enable_sequential_cpu_offload
     def enable_sequential_cpu_offload(self, gpu_id=0):
         r"""
         Offloads all models to CPU using accelerate, significantly reducing memory usage. When called, unet,
@@ -302,11 +320,11 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
         if self.safety_checker is not None:
             _, hook = cpu_offload_with_hook(self.safety_checker, device, prev_module_hook=hook)
 
-        
+        # We'll offload the last model manually.
         self.final_offload_hook = hook
 
     @property
-    
+    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline._execution_device
     def _execution_device(self):
         if not hasattr(self.unet, "_hf_hook"):
             return self.device
@@ -319,7 +337,7 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    
+    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline._encode_prompt
     def _encode_prompt(
         self,
         prompt,
@@ -373,11 +391,11 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
         prompt_embeds = prompt_embeds.to(dtype=self.text_encoder.dtype, device=device)
 
         bs_embed, seq_len, _ = prompt_embeds.shape
-        
+        # duplicate text embeddings for each generation per prompt, using mps friendly method
         prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
         prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
 
-        
+        # get unconditional embeddings for classifier free guidance
         if do_classifier_free_guidance and negative_prompt_embeds is None:
             uncond_tokens: List[str]
             if negative_prompt is None:
@@ -419,7 +437,7 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
             negative_prompt_embeds = negative_prompt_embeds[0]
 
         if do_classifier_free_guidance:
-            
+            # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
             seq_len = negative_prompt_embeds.shape[1]
 
             negative_prompt_embeds = negative_prompt_embeds.to(dtype=self.text_encoder.dtype, device=device)
@@ -427,14 +445,14 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
             negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_images_per_prompt, 1)
             negative_prompt_embeds = negative_prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
 
-            
-            
-            
+            # For classifier free guidance, we need to do two forward passes.
+            # Here we concatenate the unconditional and text embeddings into a single batch
+            # to avoid doing two forward passes
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
 
         return prompt_embeds
 
-    
+    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.run_safety_checker
     def run_safety_checker(self, image, device, dtype):
         if self.safety_checker is not None:
             safety_checker_input = self.feature_extractor(self.numpy_to_pil(image), return_tensors="pt").to(device)
@@ -445,23 +463,23 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
             has_nsfw_concept = None
         return image, has_nsfw_concept
 
-    
+    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.decode_latents
     def decode_latents(self, latents):
         latents = 1 / self.vae.config.scaling_factor * latents
         image = self.vae.decode(latents).sample
         image = (image / 2 + 0.5).clamp(0, 1)
-        
+        # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
         image = image.cpu().permute(0, 2, 3, 1).float().numpy()
         return image
 
-    
+    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_extra_step_kwargs
     def prepare_extra_step_kwargs(self, generator, eta):
         accepts_eta = "eta" in set(inspect.signature(self.scheduler.step).parameters.keys())
         extra_step_kwargs = {}
         if accepts_eta:
             extra_step_kwargs["eta"] = eta
 
-        
+        # check if the scheduler accepts generator
         accepts_generator = "generator" in set(inspect.signature(self.scheduler.step).parameters.keys())
         if accepts_generator:
             extra_step_kwargs["generator"] = generator
@@ -498,7 +516,7 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
         elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):
             raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
 
-    
+    #  Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_latents
     def prepare_latents(self, batch_size, num_channels_latents, height, width, dtype, device, generator, latents=None):
         shape = (batch_size, num_channels_latents, height // self.vae_scale_factor, width // self.vae_scale_factor)
         if isinstance(generator, list) and len(generator) != batch_size:
@@ -512,7 +530,7 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
         else:
             latents = latents.to(device)
 
-        
+        # scale the initial noise by the standard deviation required by the scheduler
         latents = latents * self.scheduler.init_noise_sigma
         return latents
 
@@ -576,7 +594,7 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
     def register_attention_control(self):
         attn_procs = {}
         cross_att_count = 0
-        
+        ### NOTE: here we are dealing with attention processors
         for name in self.unet.attn_processors.keys():
             if name.startswith("mid_block"):
                 place_in_unet = "mid"
@@ -602,7 +620,7 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
         seg_maps_ = torch.cat(seg_maps).view(len(seg_maps),-1)
         return 1.0 - (F.cosine_similarity(x_attn, seg_maps_)).mean()
     
-    
+    ### NOTE: It is inversion in essence
     @torch.no_grad()
     def __call__(
         self,
@@ -622,7 +640,7 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
         seg_maps=None,
         resolution=64,
     ):
-        
+        # 1. Define call parameters
         if prompt is not None and isinstance(prompt, str):
             batch_size = 1
         elif prompt is not None and isinstance(prompt, list):
@@ -635,13 +653,13 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
         device = self._execution_device
         do_classifier_free_guidance = guidance_scale > 1.0
 
-        
+        # 3. Preprocess image
         image = preprocess(image)
 
-        
+        # 4. Prepare latent variables
         latents = self.prepare_image_latents(image, batch_size, self.vae.dtype, device, generator)
-
-        
+        init_latents=latents
+        # 5. Encode input prompt
         num_images_per_prompt = 1
         prompt_embeds = self._encode_prompt(
             prompt,
@@ -651,30 +669,30 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
             prompt_embeds=prompt_embeds,
         )
 
-        
+        # 4. Prepare timesteps
         self.inverse_scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.inverse_scheduler.timesteps
 
-        
-        
+        # 6. Rejig the UNet so that we can obtain the cross-attenion maps and
+        # use them for guiding the subsequent image generation.
         self.unet = prepare_unet(self.unet)
-        
+        ### 8. NOTE: set attention storage. Doing similar things as above
         self.attention_store = AttentionStore()
         self.register_attention_control()
 
-        
+        ### NOTE: for saving all latents
         all_latents=[latents]
-        
+        # d_ref_t2attn = {} # reference cross attention maps
         attention_maps_list = []
         self_attention_maps_list = []
         cond_embeddings_list = []
 
-        
+        # 7. Denoising loop where we obtain the cross-attention maps.
         num_warmup_steps = len(timesteps) - num_inference_steps * self.inverse_scheduler.order
 
         with self.progress_bar(total=num_inference_steps ) as progress_bar:
             for i, t in enumerate(timesteps):
-                
+                # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 latent_model_input = self.inverse_scheduler.scale_model_input(latent_model_input, t)
 
@@ -684,16 +702,16 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
                     encoder_hidden_states=prompt_embeds,
                     ).sample
                 
-                
+                # perform guidance
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                
+                # compute the previous noisy sample x_t-1 -> x_t
                 latents = self.inverse_scheduler.step(noise_pred, t, latents).prev_sample
                 all_latents.append(latents.cpu().detach().clone())
 
-                
+                # call the callback, if provided
                 if i == len(timesteps) - 1 or (
                     (i + 1) > num_warmup_steps and (i + 1) % self.inverse_scheduler.order == 0
                 ):
@@ -721,21 +739,22 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
 
         inverted_latents = latents.detach().clone()
 
-        
-        image = self.decode_latents(latents.detach())
+        # 8. Post-processing
+        # image = self.decode_latents(latents.detach())
+        image = self.decode_latents(init_latents.detach())
 
-        
+        # Offload last model to CPU
         if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
             self.final_offload_hook.offload()
 
-        
+        # 9. Convert to PIL.
         if output_type == "pil":
             image = self.numpy_to_pil(image)
 
         if not return_dict:
             return (inverted_latents, image)
 
-        
+        # return Pix2PixInversionPipelineOutput(latents=all_latents, images=image), attention_maps_list
         return all_latents, image, self_avg_dict, cross_avg_dict
 
 
@@ -766,11 +785,11 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
         cond_embeddings_list=None,
         resolution=64,
     ):
-        
+        # 0. Define the spatial resolutions.
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
 
-        
+        # 3. Define call parameters
         if prompt is not None and isinstance(prompt, str):
             batch_size = 1
         elif prompt is not None and isinstance(prompt, list):
@@ -783,7 +802,7 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
         device = self._execution_device
         do_classifier_free_guidance = guidance_scale > 1.0
 
-        
+        # 3. Encode input prompt
         prompt_embeds = self._encode_prompt(
             prompt,
             device,
@@ -794,12 +813,12 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
             negative_prompt_embeds=negative_prompt_embeds,
         )
 
-        
+        # 4. Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
 
-        
-        
+        # 5. Generate the inverted noise from the input image or any other image
+        # generated from the input prompt.
         num_channels_latents = self.unet.in_channels
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
@@ -812,22 +831,22 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
             latents,
         )
 
-        
+        # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        
-        
+        # 8. Rejig the UNet so that we can obtain the cross-attenion maps and
+        # use them for guiding the subsequent image generation.
         self.unet = prepare_unet(self.unet)
         
         self.attention_store = AttentionStore()
         self.register_attention_control()
         attention_maps_list=[]
         self_attention_maps_list=[]
-        
+        # 7. Denoising loop where we obtain the cross-attention maps.
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
-                
+                # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
                 _prompt_embeds_ = prompt_embeds
@@ -837,21 +856,21 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
                     encoder_hidden_states=_prompt_embeds_,
                 ).sample
                 
-                
+                # perform guidance
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                
+                # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
 
-                
+                # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
         
-        
+        ### NOTE: save in dict
         self_avg_dict={}
         cross_avg_dict={}
         for element_name in ['attn', 'feat', 'query', 'key', 'value']:
@@ -869,7 +888,7 @@ class StableDiffusionDDIMInvPipeline(DiffusionPipeline):
                 
                 self_avg_dict[element_name][attn_size]=self_attn_avg
                 cross_avg_dict[element_name][attn_size]=cross_attn_avg
-        
+        # make the reference image (reconstruction)
         image_rec = self.numpy_to_pil(self.decode_latents(latents.detach()))
         return image_rec, self_avg_dict, cross_avg_dict
     

@@ -27,10 +27,14 @@ transform_train = transforms.Compose([
 ])
 pca = PCA(n_components=3)
 
+
 def save_mask(mask, output_name):
     mask_image = transform_train(mask.float())
     mask_image.save(output_name)
 
+# def save_mask(mask, label,output_dir):
+#     mask_image = transform_train(mask.float())
+#     mask_image.save(os.path.join(output_dir,f"{label}.png"))
 
 def show_image(image):
     image = 255 * image / image.max()
@@ -67,6 +71,7 @@ def cluster2noun_(clusters, background_segment_threshold, num_segments, nouns, c
     result_mask={}
     nouns_indices = [index for (index, word) in nouns]
     nouns_maps = cross_attention.cpu().numpy()[:, :, [i + 1 for i in nouns_indices]]
+    # nouns_maps = cross_attention.unsqueeze(-1).cpu().numpy()
     normalized_nouns_maps = np.zeros_like(nouns_maps).repeat(REPEAT, axis=0).repeat(REPEAT, axis=1)
     for i in range(nouns_maps.shape[-1]):
         curr_noun_map = nouns_maps[:, :, i].repeat(REPEAT, axis=0).repeat(REPEAT, axis=1)
@@ -124,10 +129,12 @@ def read_pkl(path,):
 def draw_pca(avg_dict, resolution, dict_key, save_path, special_name):
 
     RESOLUTION=resolution
+    # dict_key="key"
 
     if avg_dict[dict_key][RESOLUTION].__len__() == 0:
         return 
     before_pca = avg_dict[dict_key][RESOLUTION].reshape(RESOLUTION*RESOLUTION,-1).cpu().numpy()
+    # print(before_pca.shape)
 
     pca.fit(before_pca)
     after_pca = pca.transform(before_pca)
@@ -140,7 +147,11 @@ def draw_pca(avg_dict, resolution, dict_key, save_path, special_name):
     output_name=f'pca_{dict_key}_{resolution}_{special_name}.png'
     pca_img = Image.fromarray((pca_img * 255).astype(np.uint8))
     pca_img=pca_img.resize((512,512))
+    # display(show_image(torch.from_numpy(pca_img)))
     pca_img.save(os.path.join(save_path, output_name))
+    # plt.imshow(pca_img)
+    # plt.axis('off')
+    # plt.savefig(os.path.join(save_path, output_name))
 
 def image_normalize(numpy_array, save_path,output_name):
     numpy_array=numpy_array.cpu().numpy()
@@ -152,6 +163,10 @@ def image_normalize(numpy_array, save_path,output_name):
     plt.axis('off')
     plt.savefig(os.path.join(save_path, output_name), bbox_inches='tight', pad_inches=0)
 
+    # normalize_array = Image.fromarray((normalize_array * 255).astype(np.uint8))
+    # normalize_array=normalize_array.resize((512,512))
+    # # normalize_array=view_images(normalize_array)
+    # normalize_array.save(os.path.join(save_path, output_name))
 
 def cross_cosine_with_name(resolution, inv_avg_dict, denoise_avg_dict, indice, save_path, save_crossattn=False, noun_name = ''):
     inv_cross_attn = inv_avg_dict['attn'][resolution][:,:,indice]
@@ -177,8 +192,24 @@ def save_crossattn(input_path, caption, inv_cross_avg_dict, denoise_cross_avg_di
     inv_crossattn = inv_cross_avg_dict['attn'][RES]
     denoise_crossattn = denoise_cross_avg_dict['attn'][RES]
 
+    # inv_crossattn_maps = [item.unsqueeze(0) for item in inv_crossattn]
+    # denoise_crossattn_maps = [item.unsqueeze(0) for item in denoise_crossattn]
+
+    # inv_crossattn_maps = torch.cat(inv_crossattn_maps).mean(dim=0)
+    # denoise_crossattn_maps = torch.cat(denoise_crossattn_maps).mean(dim=0)
+
     attn_img1, _ = show_cross_attention_plus_orig_img(prompts, inv_crossattn, orig_image=org_image)
+    attn_img1_wo, _ =show_cross_attention(prompts, inv_crossattn, )
+    attn_img1_blakcwhite, _ =show_cross_attention_blackwhite(prompts, inv_crossattn)
+
     attn_img2, _ = show_cross_attention_plus_orig_img(prompts, denoise_crossattn, orig_image=org_image)
+    attn_img2_wo, _ =show_cross_attention(prompts, denoise_crossattn, )
+    attn_img2_blakcwhite, _ =show_cross_attention_blackwhite(prompts, denoise_crossattn)
 
     attn_img1.save(os.path.join(results_folder,'crossattn_inv.png')) 
+    attn_img1_wo.save(os.path.join(results_folder,'crossattn_inv_wo.png')) 
+    attn_img1_blakcwhite.save(os.path.join(results_folder,'crossattn_inv_blackwhite.png')) 
+
     attn_img2.save(os.path.join(results_folder,'crossattn_denoise.png')) 
+    attn_img2_wo.save(os.path.join(results_folder,'crossattn_denoise_wo.png')) 
+    attn_img2_blakcwhite.save(os.path.join(results_folder,'crossattn_denoise_blackwhite.png')) 
