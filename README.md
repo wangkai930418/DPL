@@ -85,7 +85,7 @@ If you find this repo helpful, do not hesitate to cite our papers. Thanks!
   author={Wang, Kai and Yang, Fei and Yang, Shiqi and Butt, Muhammad Atif and van de Weijer, Joost},
   journal={Advances in Neural Information Processing Systems},
   volume={36},
-  year={2024}
+  year={2023}
 }
 
 @article{tang2024locinv,
