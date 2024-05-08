@@ -70,3 +70,28 @@ For comparison, there are some methods already existing in the *diffusers*, we i
 Fulfill this repo with more bash files and example images in the future.
 
 More experimental images are shared via the [Google Drive.](https://drive.google.com/file/d/1o2tMKMM8L04VzTfnCfjW-AiuE1WQJ5GH/view?usp=sharing)
+
+
+## *LocInv* (CVPR 2024 AI4CC workshop)
+
+It is an enhanced version of DPL with localization priors, including the bounding boxes or segmentation masks obtained from pretrained segmentation/detection models. The corresponding codes are shown in *"_3_dpl_seg_inv.py"* and *"_3_dpl_det_inv.py"*.
+
+## References
+If you find this repo helpful, do not hesitate to cite our papers. Thanks!
+
+```
+@article{wang2023DPL,
+  title={Dynamic prompt learning: Addressing cross-attention leakage for text-based image editing},
+  author={Wang, Kai and Yang, Fei and Yang, Shiqi and Butt, Muhammad Atif and van de Weijer, Joost},
+  journal={Advances in Neural Information Processing Systems},
+  volume={36},
+  year={2024}
+}
+
+@article{tang2024locinv,
+  title={LocInv: Localization-aware Inversion for Text-Guided Image Editing},
+  author={Tang, Chuanming and Wang, Kai and Yang, Fei and van de Weijer, Joost},
+  journal={CVPR 2024 AI4CC workshop},
+  year={2024}
+}
+```
